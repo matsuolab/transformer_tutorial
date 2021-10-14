@@ -1,0 +1,13 @@
+name: tt
+channels:
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.8
+  - torchaudio
+  - torchvision
+  - torchtext
+  - spacy
+  - cudatoolkit=11.1
+prefix: /home/asolano/miniconda3/envs/tt
