@@ -27,7 +27,7 @@ from torchtext.vocab import build_vocab_from_iterator
 from torchtext.datasets import Multi30k
 from typing import Iterable, List
 
-
+import os
 
 # helper function to yield list of tokens
 def yield_tokens(data_iter: Iterable, language: str, SRC_LANGUAGE, TGT_LANGUAGE, token_transform) -> List[str]:
@@ -366,30 +366,7 @@ def main():
     # TODO make a data_processing function that returns token_transform and vocab_transform
     
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
     torch.manual_seed(0)
-
-    SRC_VOCAB_SIZE = len(vocab_transform[SRC_LANGUAGE])
-    TGT_VOCAB_SIZE = len(vocab_transform[TGT_LANGUAGE])
-    EMB_SIZE = 512
-    NHEAD = 8
-    FFN_HID_DIM = 512
-    BATCH_SIZE = 128
-    NUM_ENCODER_LAYERS = 3
-    NUM_DECODER_LAYERS = 3
-
-    # Create model
-    transformer = Seq2SeqTransformer(NUM_ENCODER_LAYERS, NUM_DECODER_LAYERS, EMB_SIZE, 
-                                    NHEAD, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE, FFN_HID_DIM)
-    # Initialize
-    for p in transformer.parameters():
-        if p.dim() > 1:
-            nn.init.xavier_uniform_(p)
-    transformer = transformer.to(DEVICE)
-
-    # For training
-    loss_fn = torch.nn.CrossEntropyLoss(ignore_index=PAD_IDX)
-    optimizer = torch.optim.Adam(transformer.parameters(), lr=0.0001, betas=(0.9, 0.98), eps=1e-9)
 
     # src and tgt language text transforms to convert raw strings into tensors indices
     text_transform = {}
@@ -398,19 +375,53 @@ def main():
                                                 vocab_transform[ln], #Numericalization
                                                 partial(tensor_transform, BOS_IDX=BOS_IDX, EOS_IDX=EOS_IDX),
                                                 ) # Add BOS/EOS and create tensor
-    from timeit import default_timer as timer
-    NUM_EPOCHS = 18
+        
+    save_file = 'trained_model.pt'
+    if os.path.isfile(save_file):
+        transformer = torch.load(save_file)
+    
+    else:
+        SRC_VOCAB_SIZE = len(vocab_transform[SRC_LANGUAGE])
+        TGT_VOCAB_SIZE = len(vocab_transform[TGT_LANGUAGE])
+        EMB_SIZE = 512
+        NHEAD = 8
+        FFN_HID_DIM = 512
+        BATCH_SIZE = 128
+        NUM_ENCODER_LAYERS = 3
+        NUM_DECODER_LAYERS = 3
 
-    for epoch in range(1, NUM_EPOCHS+1):
-        start_time = timer()
-        # model, optimizer, DEVICE, BATCH_SIZE, loss_fn
-        train_loss = train_epoch(transformer, optimizer, DEVICE, BATCH_SIZE, loss_fn, text_transform, SRC_LANGUAGE, TGT_LANGUAGE, PAD_IDX)
-        end_time = timer()
-        # model, BATCH_SIZE, DEVICE, loss_fn
-        val_loss = evaluate(transformer, BATCH_SIZE, DEVICE, loss_fn, text_transform, SRC_LANGUAGE, TGT_LANGUAGE, PAD_IDX)
-        print((f"Epoch: {epoch}, Train loss: {train_loss:.3f}, Val loss: {val_loss:.3f}, "f"Epoch time = {(end_time - start_time):.3f}s"))
+        # Create model
+        transformer = Seq2SeqTransformer(NUM_ENCODER_LAYERS, NUM_DECODER_LAYERS, EMB_SIZE, 
+                                        NHEAD, SRC_VOCAB_SIZE, TGT_VOCAB_SIZE, FFN_HID_DIM)
+        # Initialize
+        for p in transformer.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+        transformer = transformer.to(DEVICE)
 
-    print(translate(transformer, "Eine Gruppe von Menschen steht vor einem Iglu .", text_transform, SRC_LANGUAGE, TGT_LANGUAGE, BOS_IDX, EOS_IDX, vocab_transform, DEVICE))
+        # For training
+        loss_fn = torch.nn.CrossEntropyLoss(ignore_index=PAD_IDX)
+        optimizer = torch.optim.Adam(transformer.parameters(), lr=0.0001, betas=(0.9, 0.98), eps=1e-9)
+
+        from timeit import default_timer as timer
+        NUM_EPOCHS = 18
+
+        for epoch in range(1, NUM_EPOCHS+1):
+            start_time = timer()
+            # model, optimizer, DEVICE, BATCH_SIZE, loss_fn
+            train_loss = train_epoch(transformer, optimizer, DEVICE, BATCH_SIZE, loss_fn, text_transform, SRC_LANGUAGE, TGT_LANGUAGE, PAD_IDX)
+            end_time = timer()
+            # model, BATCH_SIZE, DEVICE, loss_fn
+            val_loss = evaluate(transformer, BATCH_SIZE, DEVICE, loss_fn, text_transform, SRC_LANGUAGE, TGT_LANGUAGE, PAD_IDX)
+            print((f"Epoch: {epoch}, Train loss: {train_loss:.3f}, Val loss: {val_loss:.3f}, "f"Epoch time = {(end_time - start_time):.3f}s"))
+
+        torch.save(transformer, 'trained_model.pt')
+
+    # Translation
+    de_sentence = "Eine Gruppe von Menschen steht vor einem Iglu ."
+    en_sentence = translate(transformer, de_sentence, text_transform, SRC_LANGUAGE, TGT_LANGUAGE, BOS_IDX, EOS_IDX, vocab_transform, DEVICE)
+
+    print(en_sentence)
 
 
 if __name__ == '__main__':
