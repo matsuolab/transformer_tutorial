@@ -3,9 +3,23 @@ Language Translation with nn.Transformer and torchtext
 ======================================================
 
 This tutorial shows, how to train a translation model from scratch using
-Transformer. We will be using `Multi30k <http://www.statmt.org/wmt16/multimodal-task.html#task1>`__ 
+Transformer. We will be using `Multi30k <http://www.statmt.org/wmt16/multimodal-task.html#task1>`__
 dataset to train a German to English translation model.
 """
+from functools import partial
+import math
+import os
+from typing import Iterable, List
+
+import torch
+from torch import Tensor
+import torch.nn as nn
+from torch.nn import Transformer
+from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import DataLoader
+from torchtext.data.utils import get_tokenizer
+from torchtext.vocab import build_vocab_from_iterator
+from torchtext.datasets import Multi30k
 
 
 ######################################################################
@@ -14,20 +28,11 @@ dataset to train a German to English translation model.
 #
 # `torchtext library <https://pytorch.org/text/stable/>`__ has utilities for creating datasets that can be easily
 # iterated through for the purposes of creating a language translation
-# model. In this example, we show how to use torchtext's inbuilt datasets, 
+# model. In this example, we show how to use torchtext's inbuilt datasets,
 # tokenize a raw text sentence, build vocabulary, and numericalize tokens into tensor. We will use
 # `Multi30k dataset from torchtext library <https://pytorch.org/text/stable/datasets.html#multi30k>`__
-# that yields a pair of source-target raw sentences. 
+# that yields a pair of source-target raw sentences.
 #
-#
-
-from torch._C import device
-from torchtext.data.utils import get_tokenizer
-from torchtext.vocab import build_vocab_from_iterator
-from torchtext.datasets import Multi30k
-from typing import Iterable, List
-
-import os
 
 # helper function to yield list of tokens
 def yield_tokens(data_iter: Iterable, language: str, SRC_LANGUAGE, TGT_LANGUAGE, token_transform) -> List[str]:
@@ -36,7 +41,6 @@ def yield_tokens(data_iter: Iterable, language: str, SRC_LANGUAGE, TGT_LANGUAGE,
     for data_sample in data_iter:
         yield token_transform[language](data_sample[language_index[language]])
 
- 
 
 ######################################################################
 # Seq2Seq Network using Transformer
@@ -44,22 +48,15 @@ def yield_tokens(data_iter: Iterable, language: str, SRC_LANGUAGE, TGT_LANGUAGE,
 #
 # Transformer is a Seq2Seq model introduced in `“Attention is all you
 # need” <https://papers.nips.cc/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf>`__
-# paper for solving machine translation tasks. 
+# paper for solving machine translation tasks.
 # Below, we will create a Seq2Seq network that uses Transformer. The network
 # consists of three parts. First part is the embedding layer. This layer converts tensor of input indices
 # into corresponding tensor of input embeddings. These embedding are further augmented with positional
-# encodings to provide position information of input tokens to the model. The second part is the 
-# actual `Transformer <https://pytorch.org/docs/stable/generated/torch.nn.Transformer.html>`__ model. 
+# encodings to provide position information of input tokens to the model. The second part is the
+# actual `Transformer <https://pytorch.org/docs/stable/generated/torch.nn.Transformer.html>`__ model.
 # Finally, the output of Transformer model is passed through linear layer
-# that give un-normalized probabilities for each token in the target language. 
+# that give un-normalized probabilities for each token in the target language.
 #
-
-
-from torch import Tensor
-import torch
-import torch.nn as nn
-from torch.nn import Transformer
-import math
 
 # helper Module that adds positional encoding to the token embedding to introduce a notion of word order.
 class PositionalEncoding(nn.Module):
@@ -68,7 +65,7 @@ class PositionalEncoding(nn.Module):
                  dropout: float,
                  maxlen: int = 5000):
         super(PositionalEncoding, self).__init__()
-        den = torch.exp(- torch.arange(0, emb_size, 2)* math.log(10000) / emb_size)
+        den = torch.exp(- torch.arange(0, emb_size, 2) * math.log(10000) / emb_size)
         pos = torch.arange(0, maxlen).reshape(maxlen, 1)
         pos_embedding = torch.zeros((maxlen, emb_size))
         pos_embedding[:, 0::2] = torch.sin(pos * den)
@@ -81,6 +78,7 @@ class PositionalEncoding(nn.Module):
     def forward(self, token_embedding: Tensor):
         return self.dropout(token_embedding + self.pos_embedding[:token_embedding.size(0), :])
 
+
 # helper Module to convert tensor of input indices into corresponding tensor of token embeddings
 class TokenEmbedding(nn.Module):
     def __init__(self, vocab_size: int, emb_size):
@@ -91,7 +89,8 @@ class TokenEmbedding(nn.Module):
     def forward(self, tokens: Tensor):
         return self.embedding(tokens.long()) * math.sqrt(self.emb_size)
 
-# Seq2Seq Network 
+
+# Seq2Seq Network
 class Seq2SeqTransformer(nn.Module):
     def __init__(self,
                  num_encoder_layers: int,
@@ -125,26 +124,25 @@ class Seq2SeqTransformer(nn.Module):
                 memory_key_padding_mask: Tensor):
         src_emb = self.positional_encoding(self.src_tok_emb(src))
         tgt_emb = self.positional_encoding(self.tgt_tok_emb(trg))
-        outs = self.transformer(src_emb, tgt_emb, src_mask, tgt_mask, None, 
+        outs = self.transformer(src_emb, tgt_emb, src_mask, tgt_mask, None,
                                 src_padding_mask, tgt_padding_mask, memory_key_padding_mask)
         return self.generator(outs)
 
     def encode(self, src: Tensor, src_mask: Tensor):
         return self.transformer.encoder(self.positional_encoding(
-                            self.src_tok_emb(src)), src_mask)
+                                        self.src_tok_emb(src)), src_mask)
 
     def decode(self, tgt: Tensor, memory: Tensor, tgt_mask: Tensor):
         return self.transformer.decoder(self.positional_encoding(
-                          self.tgt_tok_emb(tgt)), memory,
-                          tgt_mask)
+                                        self.tgt_tok_emb(tgt)), memory,
+                                        tgt_mask)
 
 
 ######################################################################
 # During training, we need a subsequent word mask that will prevent model to look into
 # the future words when making predictions. We will also need masks to hide
-# source and target padding tokens. Below, let's define a function that will take care of both. 
+# source and target padding tokens. Below, let's define a function that will take care of both.
 #
-
 
 def generate_square_subsequent_mask(sz, DEVICE):
     mask = (torch.triu(torch.ones((sz, sz), device=DEVICE)) == 1).transpose(0, 1)
@@ -157,7 +155,7 @@ def create_mask(src, tgt, PAD_IDX, DEVICE):
     tgt_seq_len = tgt.shape[0]
 
     tgt_mask = generate_square_subsequent_mask(tgt_seq_len, DEVICE)
-    src_mask = torch.zeros((src_seq_len, src_seq_len),device=DEVICE).type(torch.bool)
+    src_mask = torch.zeros((src_seq_len, src_seq_len), device=DEVICE).type(torch.bool)
 
     src_padding_mask = (src == PAD_IDX).transpose(0, 1)
     tgt_padding_mask = (tgt == PAD_IDX).transpose(0, 1)
@@ -165,7 +163,7 @@ def create_mask(src, tgt, PAD_IDX, DEVICE):
 
 
 ######################################################################
-# Let's now define the parameters of our model and instantiate the same. Below, we also 
+# Let's now define the parameters of our model and instantiate the same. Below, we also
 # define our loss function which is the cross-entropy loss and the optmizer used for training.
 #
 
@@ -173,15 +171,12 @@ def create_mask(src, tgt, PAD_IDX, DEVICE):
 ######################################################################
 # Collation
 # ---------
-#   
-# As seen in the ``Data Sourcing and Processing`` section, our data iterator yields a pair of raw strings. 
-# We need to convert these string pairs into the batched tensors that can be processed by our ``Seq2Seq`` network 
-# defined previously. Below we define our collate function that convert batch of raw strings into batch tensors that
-# can be fed directly into our model.   
 #
-
-
-from torch.nn.utils.rnn import pad_sequence
+# As seen in the ``Data Sourcing and Processing`` section, our data iterator yields a pair of raw strings.
+# We need to convert these string pairs into the batched tensors that can be processed by our ``Seq2Seq`` network
+# defined previously. Below we define our collate function that convert batch of raw strings into batch tensors that
+# can be fed directly into our model.
+#
 
 # helper function to club together sequential operations
 def sequential_transforms(*transforms):
@@ -191,13 +186,12 @@ def sequential_transforms(*transforms):
         return txt_input
     return func
 
+
 # function to add BOS/EOS and create tensor for input sequence indices
 def tensor_transform(token_ids: List[int], BOS_IDX, EOS_IDX):
-    return torch.cat((torch.tensor([BOS_IDX]), 
-                      torch.tensor(token_ids), 
+    return torch.cat((torch.tensor([BOS_IDX]),
+                      torch.tensor(token_ids),
                       torch.tensor([EOS_IDX])))
-
-
 
 
 # function to collate data samples into batch tesors
@@ -210,14 +204,12 @@ def collate_fn(batch, text_transform, SRC_LANGUAGE, TGT_LANGUAGE, PAD_IDX):
     src_batch = pad_sequence(src_batch, padding_value=PAD_IDX)
     tgt_batch = pad_sequence(tgt_batch, padding_value=PAD_IDX)
     return src_batch, tgt_batch
-    
+
+
 ######################################################################
-# Let's define training and evaluation loop that will be called for each 
+# Let's define training and evaluation loop that will be called for each
 # epoch.
 #
-
-from torch.utils.data import DataLoader
-from functools import partial
 
 def train_epoch(model, optimizer, DEVICE, BATCH_SIZE, loss_fn, text_transform, SRC_LANGUAGE, TGT_LANGUAGE, PAD_IDX):
     model.train()
@@ -226,7 +218,7 @@ def train_epoch(model, optimizer, DEVICE, BATCH_SIZE, loss_fn, text_transform, S
 
     applied = partial(collate_fn, text_transform=text_transform, SRC_LANGUAGE=SRC_LANGUAGE, TGT_LANGUAGE=TGT_LANGUAGE, PAD_IDX=PAD_IDX)
     train_dataloader = DataLoader(train_iter, batch_size=BATCH_SIZE, collate_fn=applied)
-    
+
     for src, tgt in train_dataloader:
         src = src.to(DEVICE)
         tgt = tgt.to(DEVICE)
@@ -235,7 +227,7 @@ def train_epoch(model, optimizer, DEVICE, BATCH_SIZE, loss_fn, text_transform, S
 
         src_mask, tgt_mask, src_padding_mask, tgt_padding_mask = create_mask(src, tgt_input, PAD_IDX, DEVICE)
 
-        logits = model(src, tgt_input, src_mask, tgt_mask,src_padding_mask, tgt_padding_mask, src_padding_mask)
+        logits = model(src, tgt_input, src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, src_padding_mask)
 
         optimizer.zero_grad()
 
@@ -265,27 +257,27 @@ def evaluate(model, BATCH_SIZE, DEVICE, loss_fn, text_transform, SRC_LANGUAGE, T
 
         src_mask, tgt_mask, src_padding_mask, tgt_padding_mask = create_mask(src, tgt_input, PAD_IDX, DEVICE)
 
-        logits = model(src, tgt_input, src_mask, tgt_mask,src_padding_mask, tgt_padding_mask, src_padding_mask)
-        
+        logits = model(src, tgt_input, src_mask, tgt_mask, src_padding_mask, tgt_padding_mask, src_padding_mask)
+
         tgt_out = tgt[1:, :]
         loss = loss_fn(logits.reshape(-1, logits.shape[-1]), tgt_out.reshape(-1))
         losses += loss.item()
 
     return losses / len(val_dataloader)
 
+
 ######################################################################
 # Now we have all the ingredients to train our model. Let's do it!
 #
 
-
-# function to generate output sequence using greedy algorithm 
+# function to generate output sequence using greedy algorithm
 def greedy_decode(model, src, src_mask, max_len, start_symbol, EOS_IDX, DEVICE):
     src = src.to(DEVICE)
     src_mask = src_mask.to(DEVICE)
 
     memory = model.encode(src, src_mask)
     ys = torch.ones(1, 1).fill_(start_symbol).type(torch.long).to(DEVICE)
-    for i in range(max_len-1):
+    for i in range(max_len - 1):
         memory = memory.to(DEVICE)
         tgt_mask = (generate_square_subsequent_mask(ys.size(0), DEVICE)
                     .type(torch.bool)).to(DEVICE)
@@ -309,7 +301,7 @@ def translate(model: torch.nn.Module, src_sentence: str, text_transform, SRC_LAN
     num_tokens = src.shape[0]
     src_mask = (torch.zeros(num_tokens, num_tokens)).type(torch.bool)
     tgt_tokens = greedy_decode(
-        model,  src, src_mask, max_len=num_tokens + 5, start_symbol=BOS_IDX, EOS_IDX=EOS_IDX, DEVICE=DEVICE).flatten()
+        model, src, src_mask, max_len=num_tokens + 5, start_symbol=BOS_IDX, EOS_IDX=EOS_IDX, DEVICE=DEVICE).flatten()
     return " ".join(vocab_transform[TGT_LANGUAGE].lookup_tokens(list(tgt_tokens.cpu().numpy()))).replace("<bos>", "").replace("<eos>", "")
 
 
@@ -355,7 +347,6 @@ def training_function(vocab_transform, text_transform, SRC_LANGUAGE, TGT_LANGUAG
 
     return transformer
 
-
 ######################################################################
 # References
 # ----------
@@ -363,6 +354,7 @@ def training_function(vocab_transform, text_transform, SRC_LANGUAGE, TGT_LANGUAG
 # 1. Attention is all you need paper.
 #    https://papers.nips.cc/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf
 # 2. The annotated transformer. https://nlp.seas.harvard.edu/2018/04/03/attention.html#positional-encoding
+
 
 def main():
     # Data processing
@@ -386,34 +378,32 @@ def main():
     special_symbols = ['<unk>', '<pad>', '<bos>', '<eos>']
 
     for ln in [SRC_LANGUAGE, TGT_LANGUAGE]:
-        # Training data Iterator 
+        # Training data Iterator
         train_iter = Multi30k(split='train', language_pair=(SRC_LANGUAGE, TGT_LANGUAGE))
-        # Create torchtext's Vocab object 
+        # Create torchtext's Vocab object
         vocab_transform[ln] = build_vocab_from_iterator(yield_tokens(train_iter, ln, SRC_LANGUAGE, TGT_LANGUAGE, token_transform),
                                                         min_freq=1,
                                                         specials=special_symbols,
                                                         special_first=True)
 
-    
-
-    # Set UNK_IDX as the default index. This index is returned when the token is not found. 
-    # If not set, it throws RuntimeError when the queried token is not found in the Vocabulary. 
+    # Set UNK_IDX as the default index. This index is returned when the token is not found.
+    # If not set, it throws RuntimeError when the queried token is not found in the Vocabulary.
     for ln in [SRC_LANGUAGE, TGT_LANGUAGE]:
         vocab_transform[ln].set_default_index(UNK_IDX)
 
     # TODO make a data_processing function that returns token_transform and vocab_transform
-    
+
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.manual_seed(0)
 
     # src and tgt language text transforms to convert raw strings into tensors indices
     text_transform = {}
     for ln in [SRC_LANGUAGE, TGT_LANGUAGE]:
-        text_transform[ln] = sequential_transforms(token_transform[ln], #Tokenization
-                                                vocab_transform[ln], #Numericalization
-                                                partial(tensor_transform, BOS_IDX=BOS_IDX, EOS_IDX=EOS_IDX),
-                                                ) # Add BOS/EOS and create tensor
-        
+        text_transform[ln] = sequential_transforms(token_transform[ln],  # Tokenization
+                                                   vocab_transform[ln],  # Numericalization
+                                                   partial(tensor_transform, BOS_IDX=BOS_IDX, EOS_IDX=EOS_IDX),
+                                                   )  # Add BOS/EOS and create tensor
+
     save_file = 'trained_model.pt'
     if os.path.isfile(save_file):
         transformer = torch.load(save_file)
